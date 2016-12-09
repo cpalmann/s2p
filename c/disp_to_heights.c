@@ -239,6 +239,19 @@ int main_disp_to_heights(int c, char *v[])
         for(int i=0;i<nb_sights;i++)
             img_selected_views[i] = (int *) calloc(width*height,sizeof( int ));
     }
+    
+    // Yet another interesting thing :
+    // let's vizualise sights !
+    char fout_obj_file[1000];
+    FILE *obj_file;
+    unsigned int vertex_index = 1;
+    if (full_outputs)
+    {
+        sprintf(fout_obj_file,"%s/sights.obj",tile_dir);
+        obj_file = fopen(fout_obj_file,"w");
+        if (obj_file)
+            fprintf(obj_file, "o sights for tile %s\n", tile_dir);
+    }
 
 
     // ################################
@@ -424,6 +437,21 @@ int main_disp_to_heights(int c, char *v[])
                           // (sights numbered from 1 to N so index = ID-1)
                           if (sights_list[s].consensus)
                             img_selected_views[sights_list[s].ID-1][posH]=1;
+                            
+                          // build obj
+                          if (obj_file)
+                          {
+                              double objpoint1[3],objpoint2[3];
+                              for(int t=0; t<3; t++)
+                              {
+                                objpoint1[t] = sights_list[s].err_vec_ptopt_to_sight[t+3] + 0.5*sights_list[s].v[t];
+                                objpoint2[t] = sights_list[s].err_vec_ptopt_to_sight[t+3] - 0.5*sights_list[s].v[t];
+                              }
+                              fprintf(obj_file, "v %f %f %f\n", objpoint1[0],objpoint1[1],objpoint1[2]);
+                              fprintf(obj_file, "v %f %f %f\n", objpoint2[0],objpoint2[1],objpoint2[2]);
+                              fprintf(obj_file, "l %d %d\n", vertex_index,vertex_index+1);
+                              vertex_index += 2;
+                          }
                         }
                     }
 
@@ -501,6 +529,9 @@ int main_disp_to_heights(int c, char *v[])
         free(fout_rpj_tab);
         free(fout_disp2D_tab);
         free(disp2D_tab);
+        
+        if (obj_file)
+            fclose(obj_file);
     }
 
     for(int i=0;i<list_pairs.real_size;i++)

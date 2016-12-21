@@ -319,27 +319,27 @@ def global_extent(tiles_full_info):
 
 def global_tie_points(tiles_full_info):
     """
-    Grab the tie points from each tile and concatenate them into 
+    Grab the tie points from each tile and concatenate them into
     a single file
     """
-    
+
     global_tiepoints_path = os.path.join(cfg['out_dir'], 'global_tie_points.txt')
-    
+
     list_tie_points = ''
     if not (os.path.isfile(global_tiepoints_path) and cfg['skip_existing']):
         for tile in tiles_full_info:
-            
+
             tile_dir = tile['directory']
             local_tie_points = os.path.join(tile_dir,'tie_points.txt')
-            
+
             if os.path.isfile(local_tie_points):
                 fic = open(local_tie_points,'r')
                 list_tie_points += fic.read()
                 fic.close()
-        
+
         fic = open(global_tiepoints_path,'w')
         fic.write( list_tie_points )
-        fic.close()        
+        fic.close()
 
 
 def compute_dsm(args):
@@ -347,9 +347,9 @@ def compute_dsm(args):
     Compute the DSMs
 
     Args:
-         - args  ( <==> [config_file,sqrt_number_of_tiles,current_tile])
+         - args  ( <==> [config_file,sqrt_number_of_tiles,current_tile,tiles_full_info])
     """
-    config_file,sqrt_number_of_tiles,current_tile = args
+    config_file,sqrt_number_of_tiles,current_tile,tiles_full_info = args
 
     # get global extrema
     extremaxy = np.loadtxt(os.path.join(cfg['out_dir'], 'global_extent.txt'))
@@ -387,6 +387,7 @@ def compute_dsm(args):
     if (current_width_index == number_of_tiles_w-1):
         width_pix  = width_pix  + residual_w
 
+    cutinf_path = os.path.join(cfg['out_dir'],'cutinf.txt')
 
     flags={}
     flags['average']=1
@@ -401,21 +402,30 @@ def compute_dsm(args):
     radius = "-radius %d" % ( cfg['dsm_radius'] )
     pinterp = "-pinterp %d" % ( cfg['dsm_pinterp'] )
 
-    cutinf_path = os.path.join(cfg['out_dir'],'cutinf.txt')
+    xmax = xmin + width_pix*cfg['dsm_resolution']
+    ymax = ymin + height_pix*cfg['dsm_resolution']
+
+    bb = '-bb "%s %s %s %s"' % (xmin, xmax, ymin, ymax)
+
+    plylist = list()
+
+    for tile_info in tiles_full_info:
+        plyextrema_file = os.path.join(tile_info['directory'], 'plyextrema.txt')
+        if os.path.exists(plyextrema_file):
+            local_xmin, local_xmax, local_ymin, local_ymax = np.loadtxt(plyextrema_file)
+            if (local_xmin <= xmax) and (local_xmax >= xmin) and (local_ymin <= ymax) and (local_ymax >= ymin):
+                plylist.append(os.path.join(os.path.abspath(tile_info['directory']),
+                                            'cloud.ply'))
 
     if (ymin <= global_ymax) and (current_tile < number_of_tiles_h*number_of_tiles_w ):
-        common.run("plytodsm %s %s %s %s %s %s %s %s %s %s" % (
-                                                 flag,
-                                                 radius,
-                                                 pinterp,
-                                                 cfg['dsm_resolution'],
-                                                 out_dsm,
-                                                 xmin,
-                                                 ymin,
-                                                 width_pix,
-                                                 height_pix,
-                                                 cutinf_path))
-
+        if len(plylist) > 0:
+            common.run("ls %s | plytodsm %s %s %s %s %s %s" % (" ".join(plylist),
+                                                               bb,
+                                                               flag,
+                                                               radius,
+                                                               pinterp,
+                                                               cfg['dsm_resolution'],
+                                                               out_dsm))
 
 def global_finalization(tiles_full_info):
     """
@@ -434,7 +444,7 @@ def global_finalization(tiles_full_info):
 
     # build final dsm
     globalfinalization.write_dsm()
-    
+
     # build other products
     if not cfg['no_vrt']:
         globalfinalization.write_vrt_files(tiles_full_info)
@@ -451,8 +461,8 @@ def global_finalization(tiles_full_info):
     # copy RPC xml files in the output directory
     for img in cfg['images']:
         shutil.copy2(img['rpc'], cfg['out_dir'])
-    
-    # Refine rpc    
+
+    # Refine rpc
     master_rpc_path = cfg['images'][0]['rpc']
     global_tiepoints_path = os.path.join(cfg['out_dir'], 'global_tie_points.txt')
     direct_path = os.path.join(cfg['out_dir'], 'direct.txt')
@@ -544,7 +554,7 @@ def execute_job(config_file,params):
         if step == 6:#"compute_dsm" :
             print 'compute_dsm ...'
             current_tile=int(tile_dir.split('_')[1]) # for instance, dsm_2 becomes 2
-            compute_dsm([config_file,cfg['dsm_sqrt_nb_tiles'],current_tile])
+            compute_dsm([config_file,cfg['dsm_sqrt_nb_tiles'],current_tile,tiles_full_info])
 
         if step == 7:#"global_finalization":
             print 'global finalization...'
@@ -657,7 +667,7 @@ def main(config_file, step=None, clusterMode=None, misc=None):
             args = []
             dsm_nb_tiles = cfg['dsm_sqrt_nb_tiles']**2
             for i in range(dsm_nb_tiles):
-                args.append([config_file, cfg['dsm_sqrt_nb_tiles'], i])
+                args.append([config_file, cfg['dsm_sqrt_nb_tiles'], i, tiles_full_info])
             show_progress.total = dsm_nb_tiles
             launch_parallel_calls(compute_dsm, args, nb_workers)
             print_elapsed_time()

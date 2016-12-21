@@ -102,6 +102,11 @@ static size_t header_get_record_length_and_utm_zone(FILE *f_in, char *utm,
     return n;
 }
 
+static void update_min_max(float *min, float *max, float x)
+{
+	if (x < *min) *min = x;
+	if (x > *max) *max = x;
+}
 
 // re-scale a double between 0 and w-1
 static int rescale_double_to_int(double x, double min, double resolution)
@@ -298,6 +303,30 @@ int get_record(FILE *f_in, int isbin, struct ply_property *t, int n, double *dat
 }
 
 
+// open a ply file, read utm zone in the header, and update the known extrema
+static void parse_ply_points_for_extrema(float *xmin, float *xmax, float *ymin,
+		float *ymax, char *utm, char *fname)
+{
+	FILE *f = fopen(fname, "r");
+	if (!f) {
+		fprintf(stderr, "WARNING: can not open file \"%s\"\n", fname);
+		return;
+	}
+
+	int isbin=0;
+	struct ply_property t[100];
+	size_t n = header_get_record_length_and_utm_zone(f, utm, &isbin, t);
+	//fprintf(stderr, "%d\n", n);
+	//fprintf(stderr, "%s\n", utm);
+
+	double data[n];
+	while ( n == get_record(f, isbin, t, n, data) ) {
+		update_min_max(xmin, xmax, data[0]);
+		update_min_max(ymin, ymax, data[1]);
+	}
+	fclose(f);
+}
+
 // open a ply file, and accumulate its points to the image
 static void add_ply_points_to_images(struct images *img,
         double xmin, double xmax, double ymin, double ymax, int radius, double resolution,
@@ -370,13 +399,10 @@ static void add_ply_points_to_images(struct images *img,
 	fclose(f);
 }
 
-
 void help(char *s)
 {
 	fprintf(stderr, "usage:\n\t"
-			"%s [-c column] [-flag flag] [-radius radius] [-param_inter param_inter] \
-			resolution out_dsm xmin ymin w h cutinfo.txt\n", s);
-			//rowmin steprow rowmax colmin stepcol colmax tw th root_out_dir\n", s);
+			"ls files | %s [-c column] [-bb \"xmin xmax ymin ymax\"] [-flag flag] [-radius radius] [-param_inter param_inter] resolution out.tif\n", s);
 	fprintf(stderr, "\t the resolution is in meters per pixel\n");
 }
 
@@ -385,30 +411,48 @@ void help(char *s)
 int main(int c, char *v[])
 {
 	int col_idx = atoi(pick_option(&c, &v, "c", "2"));
-	int flag = atoi(pick_option(&c, &v, "flag", "0"));
+	char *bbminmax = pick_option(&c, &v, "bb", "");
+	int flag = atoi(pick_option(&c, &v, "flag", "1"));
 	int radius = atoi(pick_option(&c, &v, "radius", "1"));
 	double param_inter = atof(pick_option(&c, &v, "pinterp", "1"));
 
 	// process input arguments
-	if (c != 8) {
+	if (c != 3) {
 		help(*v);
 		return 1;
 	}
-	double resolution = atof(v[1]);
-	char *out_dsm = v[2];
+	float resolution = atof(v[1]);
+	char *filename_out = v[2];
 
-	double xmin = atof(v[3]);
-	double ymin = atof(v[4]);
-	int w = atoi(v[5]);
-	int h = atoi(v[6]);
-    double xmax = xmin+w*resolution;
-    double ymax = ymin+h*resolution;
+	// initialize x, y extrema values
+	float xmin = INFINITY;
+	float xmax = -INFINITY;
+	float ymin = INFINITY;
+	float ymax = -INFINITY;
+
+	// process each filename from stdin to determine x, y extremas and store the
+	// filenames in a list of strings, to be able to open the files again
+	char fname[FILENAME_MAX], utm[3];
+	struct list *l = NULL;
+	while (fgets(fname, FILENAME_MAX, stdin))
+	{
+		strtok(fname, "\n");
+		l = push(l, fname);
+		parse_ply_points_for_extrema(&xmin, &xmax, &ymin, &ymax, utm, fname);
+	}
+	if (0 != strcmp(bbminmax, "") ) {
+		sscanf(bbminmax, "%f %f %f %f", &xmin, &xmax, &ymin, &ymax);
+	}
+	fprintf(stderr, "xmin: %20f, xmax: %20f, ymin: %20f, ymax: %20f\n", xmin, xmax, ymin, ymax);
+
 	double xmin_orig=xmin;
 	double xmax_orig=xmax;
 	double ymin_orig=ymin;
 	double ymax_orig=ymax;
-	fprintf(stderr, "xmin: %20f, xmax: %20f, ymin: %20f, ymax: %20f\n", xmin,xmax,ymin,ymax);
-    char *cutinfo=v[7];
+
+	// compute output image dimensions
+	int w = 1 + (xmax - xmin) / resolution;
+	int h = 1 + (ymax - ymin) / resolution;
 
 	if (flag>=6) // interpolation : need more data
 	{
@@ -422,88 +466,6 @@ int main(int c, char *v[])
 	}
 	else
 	    radius = 0;
-
-	// process each filename to determine x, y extremas and store the
-	// filenames in a list of strings, to be able to open the files again
-	FILE* ply_extrema_file = NULL;
-
-	char ply[1000];
-	char ply_extrema[1000];
-	char utm[3];
-
-	float local_xmin,local_xmax,local_ymin,local_ymax;
-
-	struct list *l = NULL;
-
-	// From the list of tiles, find each ply file
-	uint64_t nbply_pushed=0;
-
-    FILE* cutinfo_file = fopen(cutinfo, "r");
-
-    if (cutinfo_file)
-    {
-        int rowmin,steprow,rowmax;
-        int colmin,stepcol,colmax;
-        int tw,th,row,col;
-        char root_out_dir[1000];
-
-        while (
-
-            fscanf(cutinfo_file, "%d %d %d %d %d %d %d %d %s\n",
-                &rowmin,&steprow,&rowmax,
-                &colmin,&stepcol,&colmax,
-                &tw,&th,root_out_dir) != EOF
-
-              )
-        {
-            for(row=rowmin;row<=rowmax;row+=steprow)
-                for(col=colmin;col<=colmax;col+=stepcol)
-                {
-                   //strtok(tile_dir, "\n");
-                   sprintf(ply_extrema,"%s/tile_%d_%d_row_%d/col_%d/plyextrema.txt",root_out_dir,tw,th,row,col);
-
-                   // Now, find the extent of a given ply file,
-                   // specified by [local_xmin local_xmax local_ymin local_ymax]
-                   ply_extrema_file = fopen(ply_extrema, "r");
-                   if (ply_extrema_file)
-                    {
-                        fscanf(ply_extrema_file, "%f %f %f %f", &local_xmin, &local_xmax, &local_ymin, &local_ymax);
-                        fclose(ply_extrema_file);
-
-                        // Only add ply files that intersect the extent specified by [xmin xmax ymin ymax]
-                        // The test below simply tells whether two rectancles overlap
-                        if ( (local_xmin <= xmax) && (local_xmax >= xmin) && (local_ymin <= ymax) && (local_ymax >= ymin) )
-                        {
-                            sprintf(ply,"%s/tile_%d_%d_row_%d/col_%d/cloud.ply",root_out_dir,tw,th,row,col);
-                            // Record UTM zone
-                            FILE *ply_file = fopen(ply, "r");
-                            if (ply_file)
-                            {
-                                l = push(l, ply);
-                                nbply_pushed++;
-                                int isbin=0;
-                                struct ply_property t[100];
-                                size_t n = header_get_record_length_and_utm_zone(ply_file, utm, &isbin, t);
-                                fclose(ply_file);
-                            }
-                            else
-                                fprintf(stderr, "WARNING 2 : can not open file \"%s\"\n", ply);
-                        }
-                   }
-                   else
-                    fprintf(stderr,"WARNING 1 : can not open file %s\n",ply_extrema);
-                } //end for loops
-        }
-        fclose(cutinfo_file);
-    }
-    else
-        fprintf(stderr, "WARNING 3 : can not open file \"%s\"\n", cutinfo);
-
-	if (nbply_pushed == 0)
-	{
-		fprintf(stderr, "ERROR : no ply file pushed\n");
-		return 1;
-	}
 
 	struct list *begin = l;
 
@@ -535,7 +497,6 @@ int main(int c, char *v[])
 	while (l != NULL)
 	{
 	    n++;
-	    printf("%d / %d\n",n,nbply_pushed);
 	    add_ply_points_to_images(&img, xmin, xmax, ymin, ymax, radius,resolution, utm, l->current, col_idx,-3);
 	    l = l->next;
 	}
@@ -544,7 +505,6 @@ int main(int c, char *v[])
 	while (l != NULL)
 	{
 	    n++;
-	    printf("%d / %d\n",n,nbply_pushed);
 	    add_ply_points_to_images(&img, xmin, xmax, ymin, ymax, radius,resolution, utm, l->current, col_idx,-2);
 	    l = l->next;
 	}
@@ -567,7 +527,7 @@ int main(int c, char *v[])
     const char *pszFormat = "GTiff";
     GDALDriverH hDriver = GDALGetDriverByName( pszFormat );
 
-    hDstDS = GDALCreate( hDriver, out_dsm,
+    hDstDS = GDALCreate( hDriver, filename_out,
                          img.w, img.h, 1, GDT_Float64,
                          papszOptions );
 

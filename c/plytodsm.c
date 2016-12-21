@@ -520,8 +520,8 @@ int main(int c, char *v[])
 	  for (int i = 0; i < img.w; i++)
 	    {
 		uint64_t k = img.w * j + i;
-		img.cell_pos[k].x = xmin + i*resolution;
-		img.cell_pos[k].y = -ymax + j*resolution;
+		img.cell_pos[k].x = xmin_orig + i*resolution;
+		img.cell_pos[k].y = -ymax_orig + j*resolution;
 		img.cnt[k] = 0;
 		img.is_empty[k] = true;
 		img.pixel_value[k] = 0;
